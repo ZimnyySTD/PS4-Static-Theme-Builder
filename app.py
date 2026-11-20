@@ -119,6 +119,7 @@ class Studio(tk.Tk):
         self.function = {k:"" for k in FUNCTION_SLOTS}
         self.audio = {k:"" for k in AUDIO_SLOTS}
         self.project_path = None
+        self.asset_vars = {}
         self._style()
         self._ui()
         self._refresh_tool_status()
@@ -217,6 +218,7 @@ class Studio(tk.Tk):
         row=ttk.Frame(parent); row.pack(fill="x",pady=5)
         ttk.Label(row,text=label,width=29).pack(side="left")
         var=tk.StringVar(value=store.get(key,""))
+        self.asset_vars[(id(store),key)] = var
         ttk.Entry(row,textvariable=var,state="readonly").pack(side="left",fill="x",expand=True,padx=8)
         def browse():
             ftypes=types or [("Images / audio","*.png *.jpg *.jpeg *.wav *.mp3 *.ogg *.at9 *.vag"),("All files","*.*")]
@@ -304,6 +306,34 @@ class Studio(tk.Tk):
         if hasattr(self,"report"):
             self.report.insert("end",msg+"\n"); self.report.see("end")
 
+    def _resolve_asset_path(self, path, project_file=None):
+        if not path:
+            return ""
+        p=Path(path).expanduser()
+        if p.is_absolute():
+            return str(p)
+        bases=[]
+        if project_file:
+            bases.append(Path(project_file).resolve().parent)
+        bases.append(Path.cwd())
+        for base in bases:
+            candidate=(base/p).resolve()
+            if candidate.is_file():
+                return str(candidate)
+        return str(p.resolve())
+
+    def _refresh_asset_rows(self):
+        for (store_id,key),var in self.asset_vars.items():
+            store = self.images if store_id == id(self.images) else None
+            if store is None:
+                store = self.content if store_id == id(self.content) else None
+            if store is None:
+                store = self.function if store_id == id(self.function) else None
+            if store is None:
+                store = self.audio if store_id == id(self.audio) else None
+            if store is not None:
+                var.set(store.get(key,""))
+
     def validate_project(self):
         self.report.delete("1.0","end")
         errors=[]; warnings=[]
@@ -320,6 +350,11 @@ class Studio(tk.Tk):
         for label,var in [("Font color",self.font_color),("Font shadow color",self.shadow_color),("Focus color",self.focus_color),("Dimmer color",self.dimmer_color)]:
             if not re.fullmatch(r"#[0-9A-Fa-f]{8}",var.get().strip()):
                 errors.append(f"{label} must be an 8-digit ARGB hex value, such as #FFFFFFFF.")
+        for store in (self.images,self.content,self.function,self.audio):
+            for key,p in list(store.items()):
+                if p:
+                    store[key]=self._resolve_asset_path(p,self.project_path)
+        self._refresh_asset_rows()
         if not self.images.get("Home background"): errors.append("Home background is required for a static theme.")
         for label,p in self.images.items():
             if p and not Path(p).is_file(): errors.append(f"Missing image file: {label}")
@@ -478,8 +513,24 @@ Home music must be ATRAC9 .at9; effects must be .vag. Files are copied as-is.
     def save_project(self):
         p=filedialog.asksaveasfilename(defaultextension=".json",filetypes=[("Theme project","*.json")])
         if not p:return
+        base=Path(p).resolve().parent
+        def portable(store):
+            result={}
+            for key,value in store.items():
+                if not value:
+                    result[key]=""
+                    continue
+                path=Path(value).expanduser()
+                if path.is_absolute():
+                    try:
+                        result[key]=str(path.resolve().relative_to(base))
+                    except ValueError:
+                        result[key]=str(path.resolve())
+                else:
+                    result[key]=str(path)
+            return result
         data={"name":self.name.get(),"version":self.version.get(),"author":self.author.get(),"content_id":self.cid.get(),"title_id":self.titleid.get(),
-              "images":self.images,"content":self.content,"function":self.function,"audio":self.audio,
+              "images":portable(self.images),"content":portable(self.content),"function":portable(self.function),"audio":portable(self.audio),
               "appearance":{"theme_color":self.theme_color.get(),"font_color":self.font_color.get(),"shadow_color":self.shadow_color.get(),"focus_color":self.focus_color.get(),"dimmer_color":self.dimmer_color.get(),"bgm_enabled":self.bgm_enabled.get()}}
         Path(p).write_text(json.dumps(data,indent=2),encoding="utf-8")
         self.project_path=p; self.status_msg("Project saved: "+p)
@@ -493,10 +544,31 @@ Home music must be ATRAC9 .at9; effects must be .vag. Files are copied as-is.
             for k,v in [("name","name"),("version","version"),("author","author"),("title_id","titleid"),("content_id","cid")]:
                 getattr(self,v).set(d.get(k,""))
             self._suppress_id_sync=False
-            for k in self.images:self.images[k]=d.get("images",{}).get(k,"")
-            for k in self.content:self.content[k]=d.get("content",{}).get(k,"")
-            for k in self.function:self.function[k]=d.get("function",{}).get(k,"")
-            for k in self.audio:self.audio[k]=d.get("audio",{}).get(k,"")
+            saved_images=d.get("images",{})
+            saved_content=d.get("content",{})
+            saved_function=d.get("function",{})
+            saved_audio=d.get("audio",{})
+            legacy_content={
+                "capture_gallery":"gallery","share_play":"shareplay","tv_video":"tvvideo",
+                "live_from_playstation":"livefromps","usb_music_player":"usbmusic",
+                "playstation_store":""
+            }
+            for k in self.images:
+                self.images[k]=self._resolve_asset_path(saved_images.get(k,""),p)
+            for k in self.content:
+                value=saved_content.get(k,"")
+                if not value:
+                    for old,new in legacy_content.items():
+                        if new == k:
+                            value=saved_content.get(old,"")
+                            break
+                self.content[k]=self._resolve_asset_path(value,p)
+            for k in self.function:
+                self.function[k]=self._resolve_asset_path(saved_function.get(k,""),p)
+            for k in self.audio:
+                self.audio[k]=self._resolve_asset_path(saved_audio.get(k,""),p)
+            self.project_path=p
+            self._refresh_asset_rows()
             a=d.get("appearance",{})
             for k,var in [("theme_color",self.theme_color),("font_color",self.font_color),("shadow_color",self.shadow_color),("focus_color",self.focus_color),("dimmer_color",self.dimmer_color)]:
                 if k in a:var.set(a[k])
@@ -512,7 +584,12 @@ Home music must be ATRAC9 .at9; effects must be .vag. Files are copied as-is.
             self.name.set("My PS4 Theme"); self.version.set("01.00"); self.author.set(""); self.titleid.set(title)
             self.cid.set(make_content_id("My PS4 Theme",title))
             self._suppress_id_sync=False
-            self.images={k:"" for k in IMAGE_SLOTS}; self.content={k:"" for k in CONTENT_SLOTS}; self.function={k:"" for k in FUNCTION_SLOTS}; self.audio={k:"" for k in AUDIO_SLOTS}
+            self.images.clear(); self.images.update({k:"" for k in IMAGE_SLOTS})
+            self.content.clear(); self.content.update({k:"" for k in CONTENT_SLOTS})
+            self.function.clear(); self.function.update({k:"" for k in FUNCTION_SLOTS})
+            self.audio.clear(); self.audio.update({k:"" for k in AUDIO_SLOTS})
+            self.project_path=None
+            self._refresh_asset_rows()
             self.status_msg("New project created.")
 
     def open_output(self):
