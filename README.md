@@ -19,6 +19,10 @@ Python desktop editor for assembling PS4 static-theme assets and generating a th
 - Optional `sound/bgm_home.at9`, `se_decide.vag`, `se_cursor.vag`, `se_cancel.vag`
 - `theme.xml`, `sce_sys/param.sfo`, `.gp4`, `project.json`, build README and ZIP
 
+## Image handling
+- Selected PNG files are copied exactly and are never resized, cropped, converted or recompressed.
+- Prepare the required dimensions manually: home/function 1920x1080, preview 740x416, icon0 512x512, pic1 1920x1080, content icons 512x512, function icons 128x128 and glow 152x152.
+
 ## Packaging
 The generated GP4 uses the canonical `pkg_ps4_theme` volume type and matching Content ID. PARAM.SFO uses `CATEGORY=ac` and `IRO_TAG=2`, the metadata pair used by static themes. Open the GP4 in compatible Orbis Publishing Tools / `orbis-pub-gen` and build the PKG. Sony publishing binaries are proprietary and are not bundled.
 

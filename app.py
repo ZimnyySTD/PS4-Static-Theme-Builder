@@ -5,11 +5,6 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
 
-try:
-    from PIL import Image, ImageTk, ImageOps, ImageDraw
-except Exception:
-    Image = ImageTk = ImageOps = ImageDraw = None
-
 APP = "PS4 Static Theme Studio"
 # Names are the exact literals the PS4 looks for in texture/content_icon/.
 CONTENT_SLOTS = [
@@ -87,7 +82,7 @@ def sfo_build(entries):
     out += data
     return bytes(out)
 
-def make_gp4(image0: Path, out_file: Path, content_id: str):
+def make_gp4(image0: Path, out_file: Path, content_id: str, title="", author=""):
     import xml.etree.ElementTree as ET
     root = ET.Element("psproject", {"fmt":"gp4","version":"1000"})
     volume = ET.SubElement(root,"volume")
@@ -95,6 +90,8 @@ def make_gp4(image0: Path, out_file: Path, content_id: str):
     ET.SubElement(volume,"volume_id").text = ""
     ET.SubElement(volume,"volume_ts").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ET.SubElement(volume,"package", {"content_id":content_id,"passcode":"0"*32})
+    if title or author:
+        root.append(ET.Comment("Theme metadata: title={!r}; author={!r}".format(title,author)))
     files=ET.SubElement(root,"files",{"img_no":"0"})
     for p in sorted(image0.rglob("*")):
         if p.is_file():
@@ -230,19 +227,14 @@ class Studio(tk.Tk):
         ttk.Label(parent,text=desc,style="Muted.TLabel").pack(anchor="w",padx=(29,0))
 
     def validate_one(self,label,path):
-        if Image and label in [*IMAGE_SLOTS]:
-            try:
-                with Image.open(path) as im:
-                    expected=IMAGE_SLOTS[label][1]
-                    if im.size!=expected:
-                        self.status_msg(f"{label}: {im.width}×{im.height}; export will resize to {expected[0]}×{expected[1]}.")
-            except Exception as e: messagebox.showwarning("Image validation",str(e))
+        if Path(path).suffix.lower() != ".png":
+            messagebox.showwarning("Image validation","The PS4 theme path requires a PNG file.")
 
     def _background_ui(self):
-        self.section(self.bg_tab,"Theme images","Static PS4 theme backgrounds use 1920×1080 images. The list preview is 740×416. Missing function background and listing assets are derived from the home background.")
+        self.section(self.bg_tab,"Theme images","Files are copied exactly as selected. Prepare all PNG files with the correct PS4 dimensions before loading them; the builder does not resize or convert images.")
         for label,(dest,size,exts) in IMAGE_SLOTS.items():
-            self._browse_row(self.bg_tab,label,label,f"Target: {dest} · {size[0]}×{size[1]}",self.images,[(f"{'/'.join(exts).upper()} images"," ".join("*."+e for e in exts)),("All files","*.*")])
-        ttk.Label(self.bg_tab,text="Image processing uses Pillow: images are center-cropped to fill the target size and saved as PNG. Install requirements for this feature.",style="Muted.TLabel").pack(anchor="w",pady=10)
+            self._browse_row(self.bg_tab,label,label,f"Target: {dest} · prepare as {size[0]}×{size[1]} PNG",self.images,[("PNG images","*.png"),("All files","*.*")])
+        ttk.Label(self.bg_tab,text="No resizing, cropping, color conversion or format conversion is performed.",style="Muted.TLabel").pack(anchor="w",pady=10)
 
     def _icons_ui(self):
         self.section(self.icons_tab,"Individual icon slots","Content icons are 512×512. Function icons are 128×128 and get matching 152×152 glow files. Leave slots empty to keep the PS4 system default icon.")
@@ -254,7 +246,7 @@ class Studio(tk.Tk):
         for heading,slots,store in [("Content area icons",CONTENT_SLOTS,self.content),("Function area icons",FUNCTION_SLOTS,self.function)]:
             ttk.Label(body,text=heading,font=("Segoe UI",12,"bold")).pack(anchor="w",pady=(10,6))
             for slot in slots:
-                self._browse_row(body,slot.replace("_"," ").title(),slot,"PNG preferred; converted to PNG at export.",store,[("Image files","*.png *.jpg *.jpeg"),("All files","*.*")])
+                self._browse_row(body,slot.replace("_"," ").title(),slot,"PNG only; dimensions must be prepared manually.",store,[("PNG images","*.png"),("All files","*.*")])
 
     def _audio_ui(self):
         self.section(self.audio_tab,"Home music and system effects","The PS4 expects ATRAC9 .at9 for home BGM and VAG/PS-ADPCM .vag for effects. This build accepts already-converted files and validates the extensions; it does not pretend to convert arbitrary audio.")
@@ -357,30 +349,23 @@ class Studio(tk.Tk):
         self._refresh_asset_rows()
         if not self.images.get("Home background"): errors.append("Home background is required for a static theme.")
         for label,p in self.images.items():
-            if p and not Path(p).is_file(): errors.append(f"Missing image file: {label}")
+            if p:
+                if not Path(p).is_file(): errors.append(f"Missing image file: {label}")
+                elif Path(p).suffix.lower() != ".png": errors.append(f"{label} must be a PNG file.")
         for label,p in self.audio.items():
             if p:
                 ext=AUDIO_SLOTS[label][1]
                 if Path(p).suffix.lower()!=ext: errors.append(f"{label} must be {ext}")
                 if not Path(p).is_file(): errors.append(f"Missing audio file: {label}")
         for label,p in [*self.content.items(),*self.function.items()]:
-            if p and not Path(p).is_file(): errors.append(f"Missing icon file: {label}")
+            if p:
+                if not Path(p).is_file(): errors.append(f"Missing icon file: {label}")
+                elif Path(p).suffix.lower() != ".png": errors.append(f"{label} must be a PNG file.")
         for e in errors:self.status_msg("ERROR  "+e)
         for w in warnings:self.status_msg("WARN   "+w)
         if not errors:self.status_msg("PASS   Basic metadata and file checks passed.")
-        if not Image:self.status_msg("WARN   Pillow not installed: install requirements.txt to resize/convert images.")
         self.status_msg(f"Assets selected: {sum(bool(x) for x in self.images.values())} backgrounds/listing images, {sum(bool(x) for x in self.content.values())+sum(bool(x) for x in self.function.values())} icons, {sum(bool(x) for x in self.audio.values())} audio files.")
         return not errors
-
-    def _save_png(self,src,dest,size):
-        if not Image: raise RuntimeError("Pillow is required. Run: pip install -r requirements.txt")
-        dest.parent.mkdir(parents=True,exist_ok=True)
-        with Image.open(src) as im:
-            im=ImageOps.exif_transpose(im).convert("RGBA")
-            im=ImageOps.fit(im,size,method=Image.Resampling.LANCZOS,centering=(0.5,0.5))
-            # Console theme images are exported as RGB PNG for broad compatibility.
-            bg=Image.new("RGB",size,(0,0,0)); bg.paste(im,mask=im.getchannel("A"))
-            bg.save(dest,"PNG",optimize=True)
 
     def _xml(self,root):
         import xml.etree.ElementTree as ET
@@ -400,11 +385,14 @@ class Studio(tk.Tk):
         (root/"theme.xml").write_bytes(b'<?xml version="1.0" encoding="UTF-8"?>\n'+ET.tostring(theme,encoding="utf-8"))
 
     def _sfo(self,root):
+        provider=self.author.get().strip() or self.name.get().strip()
         entries={
             "ATTRIBUTE":(0x0404,0,4),
             "CATEGORY":(0x0204,"ac",4),
             "CONTENT_ID":(0x0204,self.cid.get().strip(),48),
             "FORMAT":(0x0204,"obs",4),
+            "PROVIDER":(0x0204,provider,128),
+            "PROVIDER_00":(0x0204,provider,128),
             "TITLE":(0x0204,self.name.get().strip(),128),
             "TITLE_ID":(0x0204,self.titleid.get().strip().upper(),12),
             "VERSION":(0x0204,self.version.get().strip(),8),
@@ -422,8 +410,6 @@ class Studio(tk.Tk):
     def build(self):
         if not self.validate_project(): 
             messagebox.showerror("Validation failed","Fix the errors listed in the validation panel."); return
-        if not Image:
-            messagebox.showerror("Missing dependency","Install Pillow first:\n\npip install -r requirements.txt"); return
         out=Path(self.output.get())/safe_folder(self.name.get())
         image0=out/"Image0"
         try:
@@ -433,31 +419,33 @@ class Studio(tk.Tk):
             (image0/"texture"/"content_icon").mkdir(parents=True)
             (image0/"texture"/"function_icon").mkdir(parents=True)
             (image0/"sound").mkdir(parents=True)
-            # Home wallpaper is mandatory; absent function screen falls back to home.
-            home=self.images["Home background"]
-            self._save_png(home,image0/"texture/background/homescreen.png",(1920,1080))
-            func=self.images.get("Function screen background") or home
-            self._save_png(func,image0/"texture/background/functionscreen.png",(1920,1080))
-            # Use home image as default theme listing art and icon if not separately supplied.
-            preview=self.images.get("Theme preview") or home
-            icon=self.images.get("Theme icon (icon0)") or home
-            pic1=self.images.get("Package image (pic1)") or home
-            self._save_png(preview,image0/"texture/preview.png",(740,416))
-            self._save_png(icon,image0/"sce_sys/icon0.png",(512,512))
-            self._save_png(pic1,image0/"sce_sys/pic1.png",(1920,1080))
+            # Assets are copied exactly as selected; no resizing, cropping, conversion or fallback.
+            image_targets={
+                "Home background":("texture/background/homescreen.png"),
+                "Function screen background":("texture/background/functionscreen.png"),
+                "Theme preview":("texture/preview.png"),
+                "Theme icon (icon0)":("sce_sys/icon0.png"),
+                "Package image (pic1)":("sce_sys/pic1.png"),
+            }
+            for label,dest in image_targets.items():
+                source=self.images.get(label)
+                if source:
+                    target=image0/dest
+                    target.parent.mkdir(parents=True,exist_ok=True)
+                    shutil.copy2(source,target)
             for slot,p in self.content.items():
-                if p:self._save_png(p,image0/f"texture/content_icon/{slot}.png",(512,512))
+                if p: shutil.copy2(p,image0/f"texture/content_icon/{slot}.png")
             for slot,p in self.function.items():
                 if p:
-                    self._save_png(p,image0/f"texture/function_icon/{slot}.png",(128,128))
-                    self._save_png(p,image0/f"texture/function_icon/{slot}_glow.png",(152,152))
+                    shutil.copy2(p,image0/f"texture/function_icon/{slot}.png")
+                    shutil.copy2(p,image0/f"texture/function_icon/{slot}_glow.png")
             for label,p in self.audio.items():
                 if p:
                     dest=image0/AUDIO_SLOTS[label][0]; dest.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(p,dest)
             self._xml(image0)
             self._sfo(image0)
             gp4=out/(safe_folder(self.name.get())+".gp4")
-            make_gp4(image0,gp4,self.cid.get().strip())
+            make_gp4(image0,gp4,self.cid.get().strip(),self.name.get().strip(),self.author.get().strip())
             manifest={
                 "name":self.name.get(),"version":self.version.get(),"author":self.author.get(),
                 "content_id":self.cid.get(),"title_id":self.titleid.get(),
