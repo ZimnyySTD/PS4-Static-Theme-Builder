@@ -5,6 +5,11 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
 
+try:
+    from PIL import Image
+except Exception:
+    Image = None
+
 APP = "PS4 Static Theme Studio"
 # Names are the exact literals the PS4 looks for in texture/content_icon/.
 CONTENT_SLOTS = [
@@ -242,8 +247,25 @@ class Studio(tk.Tk):
         ttk.Label(parent,text=desc,style="Muted.TLabel").pack(anchor="w",padx=(29,0))
 
     def validate_one(self,label,path):
-        if Path(path).suffix.lower() != ".png":
+        p=Path(path)
+        if p.suffix.lower() != ".png":
             messagebox.showwarning("Image validation","The PS4 theme path requires a PNG file.")
+            return
+        if not Image:
+            messagebox.showwarning("Image validation","Pillow is required to verify PNG texture compatibility.")
+            return
+        try:
+            with Image.open(p) as im:
+                im.verify()
+            with Image.open(p) as im:
+                expected=IMAGE_SLOTS.get(label,(None,(0,0)))[1]
+                if expected != (0,0) and im.size != expected:
+                    messagebox.showwarning(
+                        "Image size",
+                        f"{label} is {im.width}x{im.height}; required size is {expected[0]}x{expected[1]}."
+                    )
+        except Exception as exc:
+            messagebox.showwarning("Invalid PNG",str(exc))
 
     def _background_ui(self):
         self.section(self.bg_tab,"Theme images","Files are copied exactly as selected. Prepare all PNG files with the correct PS4 dimensions before loading them; the builder does not resize or convert images.")
@@ -341,6 +363,25 @@ class Studio(tk.Tk):
             if store is not None:
                 var.set(store.get(key,""))
 
+    def _prepare_ps4_png(self,source,dest,size,allow_resize=False):
+        if not Image:
+            raise RuntimeError("Pillow is required to verify and normalize PNG textures.")
+        with Image.open(source) as im:
+            im.load()
+            if im.size != size:
+                if allow_resize:
+                    compatible=im.convert("RGBA").resize(size,Image.Resampling.LANCZOS)
+                    dest.parent.mkdir(parents=True,exist_ok=True)
+                    compatible.save(dest,"PNG",compress_level=6,optimize=False)
+                    return
+                raise RuntimeError(
+                    f"{source.name}: expected {size[0]}x{size[1]}, got {im.width}x{im.height}. "
+                    "Prepare the exact PS4 dimensions before building."
+                )
+            compatible=im.convert("RGBA")
+        dest.parent.mkdir(parents=True,exist_ok=True)
+        compatible.save(dest,"PNG",compress_level=6,optimize=False)
+
     def validate_project(self):
         self.report.delete("1.0","end")
         errors=[]; warnings=[]
@@ -367,6 +408,14 @@ class Studio(tk.Tk):
             if p:
                 if not Path(p).is_file(): errors.append(f"Missing image file: {label}")
                 elif Path(p).suffix.lower() != ".png": errors.append(f"{label} must be a PNG file.")
+                elif Image:
+                    try:
+                        with Image.open(p) as im:
+                            expected=IMAGE_SLOTS[label][1]
+                            if im.size != expected:
+                                errors.append(f"{label} must be {expected[0]}x{expected[1]}; got {im.width}x{im.height}.")
+                    except Exception as exc:
+                        errors.append(f"{label} is not a valid PNG: {exc}")
         for label,p in self.audio.items():
             if p:
                 ext=AUDIO_SLOTS[label][1]
@@ -376,6 +425,15 @@ class Studio(tk.Tk):
             if p:
                 if not Path(p).is_file(): errors.append(f"Missing icon file: {label}")
                 elif Path(p).suffix.lower() != ".png": errors.append(f"{label} must be a PNG file.")
+                elif Image:
+                    expected=(512,512) if label in self.content else (128,128)
+                    try:
+                        with Image.open(p) as im:
+                            if im.size != expected:
+                                errors.append(f"{label} must be {expected[0]}x{expected[1]}; got {im.width}x{im.height}.")
+                            im.verify()
+                    except Exception as exc:
+                        errors.append(f"{label} is not a valid PNG: {exc}")
         for e in errors:self.status_msg("ERROR  "+e)
         for w in warnings:self.status_msg("WARN   "+w)
         if not errors:self.status_msg("PASS   Basic metadata and file checks passed.")
@@ -446,8 +504,8 @@ class Studio(tk.Tk):
                 source=self.images.get(label)
                 if source:
                     target=image0/dest
-                    target.parent.mkdir(parents=True,exist_ok=True)
-                    shutil.copy2(source,target)
+                    size=IMAGE_SLOTS[label][1]
+                    self._prepare_ps4_png(source,target,size)
             home=self.images["Home background"]
             for dest in (
                 "texture/background/functionscreen.png",
@@ -457,14 +515,14 @@ class Studio(tk.Tk):
             ):
                 target=image0/dest
                 if not target.exists():
-                    target.parent.mkdir(parents=True,exist_ok=True)
-                    shutil.copy2(home,target)
+                    size=IMAGE_SLOTS["Home background"][1] if "background" in dest or "pic1" in dest else IMAGE_SLOTS["Theme preview"][1]
+                    self._prepare_ps4_png(home,target,size)
             for slot,p in self.content.items():
-                if p: shutil.copy2(p,image0/f"texture/content_icon/{slot}.png")
+                if p: self._prepare_ps4_png(p,image0/f"texture/content_icon/{slot}.png",(512,512))
             for slot,p in self.function.items():
                 if p:
-                    shutil.copy2(p,image0/f"texture/function_icon/{slot}.png")
-                    shutil.copy2(p,image0/f"texture/function_icon/{slot}_glow.png")
+                    self._prepare_ps4_png(p,image0/f"texture/function_icon/{slot}.png",(128,128))
+                    self._prepare_ps4_png(p,image0/f"texture/function_icon/{slot}_glow.png",(152,152),allow_resize=True)
             for label,p in self.audio.items():
                 if p:
                     dest=image0/AUDIO_SLOTS[label][0]; dest.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(p,dest)
