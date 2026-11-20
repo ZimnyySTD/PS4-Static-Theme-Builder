@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory() as td:
     gp=p/"x.gp4"; make_gp4(p,gp,"IV0000-TEST00001_00-TESTTHEME0000000","Test Theme","Test Author")
     gp_text=gp.read_text(encoding="utf-8")
     assert b"pkg_ps4_theme" in gp.read_bytes()
-    assert "Test Author" in gp_text
+    assert gp.read_bytes().startswith(b"\xef\xbb\xbf")
     assert "chunk_info" not in gp_text
     assert 'storage_type' not in gp_text
 print("SFO and GP4 smoke tests passed")

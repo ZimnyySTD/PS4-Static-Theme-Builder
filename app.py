@@ -90,19 +90,34 @@ def make_gp4(image0: Path, out_file: Path, content_id: str, title="", author="")
     ET.SubElement(volume,"volume_id").text = ""
     ET.SubElement(volume,"volume_ts").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ET.SubElement(volume,"package", {"content_id":content_id,"passcode":"0"*32})
-    if title or author:
-        root.append(ET.Comment("Theme metadata: title={!r}; author={!r}".format(title,author)))
     files=ET.SubElement(root,"files",{"img_no":"0"})
+    gp4_dir=out_file.resolve().parent
     for p in sorted(image0.rglob("*")):
         if p.is_file():
             rel=p.relative_to(image0).as_posix()
-            orig=str(p.resolve()).replace("/","\\")
+            try:
+                orig_rel=p.resolve().relative_to(gp4_dir)
+                orig=str(orig_rel).replace("/","\\")
+            except ValueError:
+                orig=str(p.resolve()).replace("/","\\")
             ET.SubElement(files,"file",{"targ_path":rel,"orig_path":orig})
+    dirs={}
+    for p in sorted(image0.rglob("*")):
+        if p.is_dir():
+            node=dirs
+            rel=p.relative_to(image0).parts
+            for part in rel:
+                node=node.setdefault(part,{})
+    def add_dirs(parent,node,depth):
+        for name,children in node.items():
+            d=ET.SubElement(parent,"dir",{"targ_name":name})
+            if children:
+                add_dirs(d,children,depth+1)
     rd=ET.SubElement(root,"rootdir")
-    for d in ["sce_sys","texture","sound","scene"]:
-        ET.SubElement(rd,"dir",{"targ_name":d})
+    add_dirs(rd,dirs,0)
     ET.indent(root, space="  ")
-    out_file.write_bytes(b'<?xml version="1.0" encoding="utf-8" standalone="yes"?>\n'+ET.tostring(root,encoding="utf-8"))
+    xml=b'\xef\xbb\xbf'+b'<?xml version="1.0" encoding="utf-8" standalone="yes"?>\n'+ET.tostring(root,encoding="utf-8")
+    out_file.write_bytes(xml)
 
 class Studio(tk.Tk):
     def __init__(self):
@@ -433,6 +448,17 @@ class Studio(tk.Tk):
                     target=image0/dest
                     target.parent.mkdir(parents=True,exist_ok=True)
                     shutil.copy2(source,target)
+            home=self.images["Home background"]
+            for dest in (
+                "texture/background/functionscreen.png",
+                "texture/preview.png",
+                "sce_sys/icon0.png",
+                "sce_sys/pic1.png",
+            ):
+                target=image0/dest
+                if not target.exists():
+                    target.parent.mkdir(parents=True,exist_ok=True)
+                    shutil.copy2(home,target)
             for slot,p in self.content.items():
                 if p: shutil.copy2(p,image0/f"texture/content_icon/{slot}.png")
             for slot,p in self.function.items():
