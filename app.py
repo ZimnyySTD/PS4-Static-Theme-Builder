@@ -11,9 +11,10 @@ except Exception:
     Image = ImageTk = ImageOps = ImageDraw = None
 
 APP = "PS4 Static Theme Studio"
+# Names are the exact literals the PS4 looks for in texture/content_icon/.
 CONTENT_SLOTS = [
-    "browser", "capture_gallery", "share_play", "tv_video", "library",
-    "live_from_playstation", "usb_music_player", "disc", "folder", "playstation_store"
+    "browser", "disc", "discoverlay", "folder", "gallery", "library",
+    "livefromps", "shareplay", "tvvideo", "usbmusic"
 ]
 FUNCTION_SLOTS = ["community", "event", "friend", "message", "notification", "party", "power", "setting", "trophy"]
 THEME_COLORS = ["Blue", "Pink", "Red", "Navy", "Dark Gray", "Gold", "Light Steel Blue", "Purple"]
@@ -35,13 +36,21 @@ AUDIO_SLOTS = {
 def safe_folder(s):
     return re.sub(r'[^\w.-]+', '_', s.strip(), flags=re.UNICODE).strip("._") or "PS4_Theme"
 
-def make_content_id(name):
-    # PS4 content ID layout: IV0000-<title-id>_00-<16-char content label>.
-    # Locally generated identifiers are editable and are not Sony-issued IDs.
-    token = re.sub(r'[^A-Z0-9]', '', name.upper()) or "CUSTOMTHEME"
-    title = (token[:9]).ljust(9, "0")
-    suffix = (re.sub(r'[^A-Z0-9]', '', name.upper())[:16]).ljust(16, "0")
-    return f"IV0000-{title}_00-{suffix}"
+TITLE_ID_RE = re.compile(r"^[A-Z]{4}[0-9]{5}$")
+CONTENT_ID_RE = re.compile(r"^[A-Z0-9]{6}-[A-Z]{4}[0-9]{5}_00-[A-Z0-9]{16}$")
+
+def make_title_id(name):
+    """Create a valid XXXXYYYYY Title ID from the theme name."""
+    token = re.sub(r"[^A-Z0-9]", "", name.upper())
+    digest = sum((i + 1) * ord(ch) for i, ch in enumerate(token)) if token else 1
+    return f"CUSA{(digest % 100000):05d}"
+
+def make_content_id(name, title_id="CUSA00000"):
+    # Canonical custom-theme layout: XXXXXX-TITLEID_00-16-character label.
+    title_id = title_id.strip().upper() if TITLE_ID_RE.fullmatch(title_id.strip().upper()) else "CUSA00000"
+    label = re.sub(r"[^A-Z0-9]", "", name.upper())[:16]
+    label = (label or "THEME").ljust(16, "0")
+    return f"UP9000-{title_id}_00-{label}"
 
 def sfo_build(entries):
     """Build a PARAM.SFO binary using the documented PSF 1.1 table layout."""
@@ -49,24 +58,33 @@ def sfo_build(entries):
     keys = bytearray()
     data = bytearray()
     index = []
-    for key, (fmt, value, max_len) in entries.items():
+    ordered = sorted(entries.items())
+    for key, (fmt, value, max_len) in ordered:
         key_off = len(keys)
         keys += key.encode("utf-8") + b"\0"
         if fmt == 0x0404:
             raw = struct.pack("<I", int(value))
+            used_len = 4
         else:
-            raw = str(value).encode("utf-8") + b"\0"
+            text = str(value).encode("utf-8")
+            raw = text[:int(max_len)-1].ljust(int(max_len)-1, b"\0") + b"\0"
+            used_len = min(len(text) + 1, int(max_len))
         data_off = len(data)
+        index.append((key_off, fmt, used_len, max(int(max_len), len(raw)), data_off))
         data += raw
-        index.append((key_off, fmt, len(raw), max(int(max_len), len(raw)), data_off))
+        while len(data) % 4:
+            data += b"\0"
     header_size = 0x14
     index_size = len(index) * 0x10
     key_start = header_size + index_size
-    data_start = key_start + len(keys)
+    data_start = (key_start + len(keys) + 3) & ~3
     out = bytearray(struct.pack("<4sIIII", b"\0PSF", 0x00000101, key_start, data_start, len(index)))
     for key_off, fmt, length, max_len, data_off in index:
         out += struct.pack("<HHIII", key_off, fmt, length, max_len, data_off)
-    out += keys + data
+    out += keys
+    while len(out) < data_start:
+        out += b"\0"
+    out += data
     return bytes(out)
 
 def make_gp4(image0: Path, out_file: Path, content_id: str):
@@ -74,13 +92,9 @@ def make_gp4(image0: Path, out_file: Path, content_id: str):
     root = ET.Element("psproject", {"fmt":"gp4","version":"1000"})
     volume = ET.SubElement(root,"volume")
     ET.SubElement(volume,"volume_type").text = "pkg_ps4_theme"
-    ET.SubElement(volume,"volume_id").text = "PS4VOLUME"
+    ET.SubElement(volume,"volume_id").text = ""
     ET.SubElement(volume,"volume_ts").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ET.SubElement(volume,"package", {"content_id":content_id,"passcode":"0"*32,"storage_type":"bd50","app_type":"full"})
-    ci=ET.SubElement(volume,"chunk_info",{"chunk_count":"1","scenario_count":"1"})
-    chunks=ET.SubElement(ci,"chunks"); ET.SubElement(chunks,"chunk",{"id":"0","layer_no":"0","label":"Chunk #0"})
-    scenarios=ET.SubElement(ci,"scenarios",{"default_id":"0"})
-    ET.SubElement(scenarios,"scenario",{"id":"0","type":"sp","initial_chunk_count":"1","label":"Scenario #0"}).text="0"
+    ET.SubElement(volume,"package", {"content_id":content_id,"passcode":"0"*32})
     files=ET.SubElement(root,"files",{"img_no":"0"})
     for p in sorted(image0.rglob("*")):
         if p.is_file():
@@ -130,6 +144,7 @@ class Studio(tk.Tk):
         top=ttk.Frame(self,padding=(20,14)); top.pack(fill="x")
         ttk.Label(top,text="PS4 STATIC THEME STUDIO",font=("Segoe UI",18,"bold")).pack(anchor="w")
         ttk.Label(top,text="Build a static theme workspace, validate assets, and prepare a GP4 project",style="Muted.TLabel").pack(anchor="w",pady=(2,0))
+        ttk.Label(top,text="Made by FernyOven",style="Muted.TLabel").pack(anchor="e",side="bottom")
         bar=ttk.Frame(self,padding=(18,0,18,10)); bar.pack(fill="x")
         ttk.Button(bar,text="New project",command=self.new_project).pack(side="left")
         ttk.Button(bar,text="Open project",command=self.open_project).pack(side="left",padx=6)
@@ -155,9 +170,12 @@ class Studio(tk.Tk):
         self.name=tk.StringVar(value="My PS4 Theme")
         self.version=tk.StringVar(value="01.00")
         self.author=tk.StringVar(value="")
-        self.cid=tk.StringVar(value=make_content_id(self.name.get()))
-        self.titleid=tk.StringVar(value="CSTM00001")
-        self.vars=[("Theme name",self.name),("Version",self.version),("Author / provider",self.author),("Content ID",self.cid),("Title ID (9 chars)",self.titleid)]
+        self.titleid=tk.StringVar(value=make_title_id(self.name.get()))
+        self.cid=tk.StringVar(value=make_content_id(self.name.get(),self.titleid.get()))
+        self._suppress_id_sync=False
+        self.name.trace_add("write",lambda *_:self._sync_name_id())
+        self.titleid.trace_add("write",lambda *_:self._sync_generated_ids())
+        self.vars=[("Theme name",self.name),("Version",self.version),("Author / provider",self.author),("Title ID (CUSA + 5 digits)",self.titleid),("Content ID",self.cid)]
         grid=ttk.Frame(self.meta_tab); grid.pack(fill="x")
         for i,(label,var) in enumerate(self.vars):
             ttk.Label(grid,text=label,width=22).grid(row=i,column=0,sticky="w",pady=8)
@@ -167,7 +185,33 @@ class Studio(tk.Tk):
         ttk.Button(row,text="Regenerate Content ID",command=self.regenerate_id).pack(side="left")
         ttk.Label(self.meta_tab,text="A locally generated ID is a project identifier, not a Sony-issued entitlement. Keep the same ID in PARAM.SFO and GP4.",style="Muted.TLabel",wraplength=850).pack(anchor="w",pady=10)
 
-    def regenerate_id(self): self.cid.set(make_content_id(self.name.get()))
+    def _sync_name_id(self):
+        if getattr(self,"_suppress_id_sync",False):
+            return
+        name=self.name.get().strip()
+        title=self.titleid.get().strip().upper()
+        if not TITLE_ID_RE.fullmatch(title):
+            title=make_title_id(name)
+            self._suppress_id_sync=True
+            self.titleid.set(title)
+            self._suppress_id_sync=False
+        self.cid.set(make_content_id(name,title))
+
+    def _sync_generated_ids(self):
+        if getattr(self,"_suppress_id_sync",False):
+            return
+        name=self.name.get().strip()
+        title=(self.titleid.get().strip().upper())
+        if not TITLE_ID_RE.fullmatch(title):
+            return
+        self.cid.set(make_content_id(name,title))
+
+    def regenerate_id(self):
+        title=make_title_id(self.name.get())
+        self._suppress_id_sync=True
+        self.titleid.set(title)
+        self._suppress_id_sync=False
+        self.cid.set(make_content_id(self.name.get(),title))
 
     def _browse_row(self,parent,label,key,desc,store,types=None):
         row=ttk.Frame(parent); row.pack(fill="x",pady=5)
@@ -266,8 +310,16 @@ class Studio(tk.Tk):
         if not self.name.get().strip(): errors.append("Theme name is required.")
         if not re.fullmatch(r"\d{2}\.\d{2}",self.version.get().strip()): warnings.append("Version should normally look like 01.00.")
         cid=self.cid.get().strip()
-        if not re.fullmatch(r"IV0000-[A-Z0-9]{9}_00-[A-Z0-9]{16}",cid): errors.append("Content ID format must be IV0000-XXXXXXXXX_00-XXXXXXXXXXXXXXXX.")
-        if len(self.titleid.get().strip())!=9: errors.append("Title ID should be 9 characters.")
+        if not CONTENT_ID_RE.fullmatch(cid):
+            errors.append("Content ID format must be XXXXXX-CUSA00000_00-16CHARACTERS.")
+        titleid=self.titleid.get().strip().upper()
+        if not TITLE_ID_RE.fullmatch(titleid):
+            errors.append("Title ID must be 4 uppercase letters followed by 5 digits, such as CUSA00000.")
+        if titleid not in cid:
+            errors.append("Content ID must contain the same Title ID.")
+        for label,var in [("Font color",self.font_color),("Font shadow color",self.shadow_color),("Focus color",self.focus_color),("Dimmer color",self.dimmer_color)]:
+            if not re.fullmatch(r"#[0-9A-Fa-f]{8}",var.get().strip()):
+                errors.append(f"{label} must be an 8-digit ARGB hex value, such as #FFFFFFFF.")
         if not self.images.get("Home background"): errors.append("Home background is required for a static theme.")
         for label,p in self.images.items():
             if p and not Path(p).is_file(): errors.append(f"Missing image file: {label}")
@@ -298,10 +350,14 @@ class Studio(tk.Tk):
     def _xml(self,root):
         import xml.etree.ElementTree as ET
         theme=ET.Element("theme")
+        label=re.sub(r"[^A-Za-z0-9_-]","-",self.name.get().strip())[:64].strip("-") or "custom-theme"
         values=[
-            ("format-version","1"),("themecolor",str(THEME_COLORS.index(self.theme_color.get()))),
+            ("format-version","4.0"),("themecolor",str(THEME_COLORS.index(self.theme_color.get()))),
+            ("label",label),
             ("fontcolor",self.font_color.get()),("fontshadowcolor",self.shadow_color.get()),
-            ("focuscolor",self.focus_color.get()),("dimmercolor",self.dimmer_color.get()),
+            ("focuscolor",self.focus_color.get()),
+            ("homescreen-dimmer","#00FFFFFF"),("functionscreen-dimmer","#00FFFFFF"),
+            ("titlename-dimmer","#00FFFFFF"),
             ("homebgm-enable","True" if self.bgm_enabled.get() and self.audio.get("Home background music") else "False")
         ]
         for k,v in values: ET.SubElement(theme,k).text=v
@@ -310,22 +366,20 @@ class Studio(tk.Tk):
 
     def _sfo(self,root):
         entries={
+            "ATTRIBUTE":(0x0404,0,4),
             "CATEGORY":(0x0204,"ac",4),
             "CONTENT_ID":(0x0204,self.cid.get().strip(),48),
+            "FORMAT":(0x0204,"obs",4),
             "TITLE":(0x0204,self.name.get().strip(),128),
-            "TITLE_00":(0x0204,self.name.get().strip(),128),
-            "PROVIDER":(0x0204,self.author.get().strip(),128),
-            "PROVIDER_00":(0x0204,self.author.get().strip(),128),
+            "TITLE_ID":(0x0204,self.titleid.get().strip().upper(),12),
             "VERSION":(0x0204,self.version.get().strip(),8),
-            "APP_VER":(0x0204,self.version.get().strip(),8),
-            "TITLE_ID":(0x0204,self.titleid.get().strip(),12),
             "IRO_TAG":(0x0404,2,4),
-            "ATTRIBUTE":(0x0404,0,4),
-            "DOWNLOAD_DATA_SIZE":(0x0404,0,4),
-            "SYSTEM_VER":(0x0404,0,4),
+            "CONTENT_VER":(0x0204,self.version.get().strip(),8),
         }
+        pubinfo=f"c_date={datetime.now().strftime('%Y%m%d')}"
         if self.audio.get("Home background music"):
-            entries["PUBTOOLINFO"]=(0x0204,"bgmhome_loud=-36.48",512)
+            pubinfo += ",bgmhome_loud=-36.48"
+        entries["PUBTOOLINFO"]=(0x0204,pubinfo,512)
         p=root/"sce_sys"/"param.sfo"; p.parent.mkdir(parents=True,exist_ok=True)
         p.write_bytes(sfo_build(entries))
         return p
@@ -435,7 +489,10 @@ Home music must be ATRAC9 .at9; effects must be .vag. Files are copied as-is.
         if not p:return
         try:
             d=json.loads(Path(p).read_text(encoding="utf-8"))
-            for k,v in [("name","name"),("version","version"),("author","author"),("content_id","cid"),("title_id","titleid")]: getattr(self,v).set(d.get(k,""))
+            self._suppress_id_sync=True
+            for k,v in [("name","name"),("version","version"),("author","author"),("title_id","titleid"),("content_id","cid")]:
+                getattr(self,v).set(d.get(k,""))
+            self._suppress_id_sync=False
             for k in self.images:self.images[k]=d.get("images",{}).get(k,"")
             for k in self.content:self.content[k]=d.get("content",{}).get(k,"")
             for k in self.function:self.function[k]=d.get("function",{}).get(k,"")
@@ -450,7 +507,11 @@ Home music must be ATRAC9 .at9; effects must be .vag. Files are copied as-is.
 
     def new_project(self):
         if messagebox.askyesno("New project","Clear the current project?"):
-            self.name.set("My PS4 Theme"); self.version.set("01.00"); self.author.set(""); self.cid.set(make_content_id(self.name.get())); self.titleid.set("CSTM00001")
+            title=make_title_id("My PS4 Theme")
+            self._suppress_id_sync=True
+            self.name.set("My PS4 Theme"); self.version.set("01.00"); self.author.set(""); self.titleid.set(title)
+            self.cid.set(make_content_id("My PS4 Theme",title))
+            self._suppress_id_sync=False
             self.images={k:"" for k in IMAGE_SLOTS}; self.content={k:"" for k in CONTENT_SLOTS}; self.function={k:"" for k in FUNCTION_SLOTS}; self.audio={k:"" for k in AUDIO_SLOTS}
             self.status_msg("New project created.")
 

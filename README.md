@@ -1,5 +1,7 @@
 # PS4 Static Theme Studio 2.0
 
+Made by FernyOven
+
 Python desktop editor for assembling PS4 static-theme assets and generating a theme folder, `PARAM.SFO`, `theme.xml`, GP4 manifest and ZIP.
 
 ## Run
@@ -18,13 +20,14 @@ Python desktop editor for assembling PS4 static-theme assets and generating a th
 - `theme.xml`, `sce_sys/param.sfo`, `.gp4`, `project.json`, build README and ZIP
 
 ## Packaging
-The generated GP4 uses the `pkg_ps4_theme` volume type and matching Content ID. Open it in a compatible Orbis Publishing Tools / `orbis-pub-gen` installation and build the PKG. Sony publishing binaries are proprietary and are not bundled. The GP4 and SFO output should be validated with the exact toolchain/firmware workflow you use before installing on hardware.
+The generated GP4 uses the canonical `pkg_ps4_theme` volume type and matching Content ID. PARAM.SFO uses `CATEGORY=ac` and `IRO_TAG=2`, the metadata pair used by static themes. Open the GP4 in compatible Orbis Publishing Tools / `orbis-pub-gen` and build the PKG. Sony publishing binaries are proprietary and are not bundled.
 
 ## Audio
 This app copies already-converted `.at9` and `.vag` files. It does not convert arbitrary MP3/WAV files. Use a compatible ATRAC9 encoder and VAG/PS-ADPCM encoder; the PS4 theme documentation specifies 48 kHz audio.
 
 ## Notes
-- The Content ID generator creates a syntactically formatted local identifier based on the theme name. It is not a Sony-issued ID or entitlement.
+- Title IDs use the PS4 format `CUSA` plus five digits. The Content ID is generated as `UP9000-CUSA00000_00-16CHARACTERS` and must contain the selected Title ID.
+- Generated IDs are local project identifiers, not Sony-issued IDs or entitlements.
 - Empty icon slots are omitted so the system's defaults can remain.
 - Function background falls back to the home background if omitted.
 - The project does not create dynamic RAF scenes.
